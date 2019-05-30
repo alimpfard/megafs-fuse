@@ -12,27 +12,30 @@
 #include "MegaFuse.h"
 #include "MAID.h"
 // clang-format on
-
-constexpr int score(int quota, int pr) { return quota * (pr ? pr : 1); }
+constexpr long score(long quota, int pr) { return quota * (pr ? pr : 1); }
 
 MAID MegaFuse::findCorrespondingMaidEntry(const char *path) {
-  int best = 0, argbest = -1;
-  for (int i = 0; i < maidcontroller.models.size(); ++i) {
+  long best = 0;
+  int argbest = -1;
+  for (long unsigned int i = 0; i < maidcontroller.models.size(); ++i) {
     printf("[MAID Search] searching for '%s' in idx %d...", path, i);
     if (maidcontroller.models[i]->cacheManager.find(path) !=
         maidcontroller.models[i]->cacheManager.end()) {
     ok_thats_fine:;
-      int scorev =
-          score(maidcontroller.meta[i]->remaining_quota,
-                maidcontroller.meta[i]->priority);
-      printf("exists with score %d\n", scorev);
+      auto scorev = score(maidcontroller.meta[i]->remaining_quota,
+                          maidcontroller.meta[i]->priority);
+      printf("exists with score %ld\n", scorev);
       if (scorev > best) {
         best = scorev;
         argbest = i;
       }
     } else {
-      std::lock_guard<std::mutex> lock2(*maidcontroller.mutexes[i]);
-      if (maidcontroller.models[i]->nodeByPath(path))
+      bool f;
+      {
+        std::lock_guard<std::mutex> lock2(*maidcontroller.mutexes[i]);
+        f = maidcontroller.models[i]->nodeByPath(path);
+      }
+      if (f)
         goto ok_thats_fine;
       else
         printf("doesn't exist\n");
@@ -63,10 +66,9 @@ std::vector<MAID> MegaFuse::findAllValidMaidEntries(const char *path) {
     if (maidcontroller.models[i]->cacheManager.find(path) !=
         maidcontroller.models[i]->cacheManager.end()) {
     ok_thats_fine:;
-      int scorev =
-          score(maidcontroller.meta[i]->remaining_quota,
-                maidcontroller.meta[i]->priority);
-      printf("exists with score %d\n", scorev);
+      long scorev = score(maidcontroller.meta[i]->remaining_quota,
+                          maidcontroller.meta[i]->priority);
+      printf("exists with score %ld\n", scorev);
       result.push_back(MAID{
           maidcontroller.models[i],
           maidcontroller.clients[i],
@@ -99,7 +101,7 @@ void MegaFuse::maintenance(MegaFuse *that) {
     if (that->needSerializeXattr)
       that->serializeXattr();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(60000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10000));
   }
 }
 
@@ -129,15 +131,28 @@ int MegaFuse::getAttr(const char *path, struct stat *stbuf) {
   //  return -ENOSPC;
   printf("getAttr accessing '%s'\n", path);
   if (strncmp(path, "/~%", 3) == 0) {
-      // dev node
-      printf("Trying to access dev node? %s\n", path+3);
-      if (strcmp(path+3, "stat") == 0) {
-        stbuf->st_mode = S_IFREG | 0555;
-        stbuf->st_nlink = 1;
-        stbuf->st_size = 4096;
-        stbuf->st_mtime = 0;
-        return 0;
-      }
+    // dev node
+    printf("Trying to access dev node? %s\n", path + 3);
+    if (strcmp(path + 3, "stat") == 0) {
+      stbuf->st_mode = S_IFREG | 0444;
+      stbuf->st_nlink = 1;
+      stbuf->st_size = 4096;
+      stbuf->st_mtime = 0;
+      return 0;
+    } else if (strcmp(path + 3, "pr") == 0) {
+      stbuf->st_mode = S_IFREG | 0222;
+      stbuf->st_nlink = 1;
+      stbuf->st_size = 0;
+      stbuf->st_mtime = 0;
+      return 0;
+  } else if (strncmp(path + 3, "resolve/", min(strlen(path+3), (size_t)8)) == 0) {
+      printf("Accessing resolve:%s...\n", path+10);
+      stbuf->st_mode = (strlen(path+3)>7 ? S_IFREG : S_IFDIR) | 0444;
+      stbuf->st_nlink = 1;
+      stbuf->st_size = 4096;
+      stbuf->st_mtime = 0;
+      return 0;
+  }
   }
   std::string str_path(path);
   MAID maid = findCorrespondingMaidEntry(path);
@@ -234,10 +249,15 @@ int MegaFuse::mkdir(const char *p, mode_t mode) {
 
 int MegaFuse::open(const char *path, fuse_file_info *fi) {
   if (strncmp(path, "/~%", 3) == 0) {
-      // dev node
-      if (strcmp(path+3, "stat") == 0) {
-          return 0;
-      }
+    // dev node
+    if (strcmp(path + 3, "stat") == 0) {
+      return 0;
+    }
+    if (strcmp(path + 3, "pr") == 0) {
+      return 0;
+    }
+    if (strncmp(path + 3, "resolve/", min((size_t) 8, strlen(path+3))) == 0)
+        return 0;
   }
   MAID maid = findCorrespondingMaidEntry(path);
   return maid.model->open(path, fi);
@@ -247,22 +267,38 @@ int MegaFuse::read(const char *path, char *buf, size_t size, off_t offset,
                    fuse_file_info *fi) {
   // FIXME: the engine is running between the two calls
   if (strncmp(path, "/~%", 3) == 0) {
-      // dev node
-      static char vbuf[4096];
-      char *fbuf = vbuf;
-      if (strcmp(path+3, "stat") == 0) {
-          fbuf += sprintf(fbuf, "account stats for %d accounts\n", maidcontroller.models.size());
-          for (auto& model : maidcontroller.models)
-          {
-              fbuf += sprintf(fbuf, "%s:\n", Config::getInstance()->userInfo[model->meta->index]->USERNAME.c_str());
-              fbuf += sprintf(fbuf, "\ttotal_quota: %d\n", model->meta->total_quota);
-              fbuf += sprintf(fbuf, "\tremaining_quota: %d\n", model->meta->remaining_quota);
-              fbuf += sprintf(fbuf, "\tpriority: %d\n", model->meta->priority);
-          }
-          printf("Used up %d bytes in read for stat\n", fbuf-vbuf);
-          strcpy(buf, vbuf);
-          return fbuf-vbuf;
+      printf("Reading dev node '%s'\n", path+3);
+    // dev node
+    static char vbuf[4096];
+    char *fbuf = vbuf;
+    if (strcmp(path + 3, "stat") == 0) {
+      fbuf += sprintf(fbuf, "account stats for %d accounts\n",
+                      maidcontroller.models.size());
+      for (auto &model : maidcontroller.models) {
+        fbuf += sprintf(fbuf, "%s:\n",
+                        Config::getInstance()
+                            ->userInfo[model->meta->index]
+                            ->USERNAME.c_str());
+        fbuf += sprintf(fbuf, "\ttotal_quota: %d\n", model->meta->total_quota);
+        fbuf += sprintf(fbuf, "\tremaining_quota: %d\n",
+                        model->meta->remaining_quota);
+        fbuf += sprintf(fbuf, "\tpriority: %d\n", model->meta->priority);
       }
+      printf("Used up %d bytes in read for stat\n", fbuf - vbuf);
+      strcpy(buf, vbuf);
+      return fbuf - vbuf;
+    } else if (strcmp(path + 3, "pr") == 0) {
+      return -ENODATA;
+  } else if (strncmp(path + 3, "resolve/", 8) == 0) {
+      printf("resolve %s...\n", path+10);
+      MAID maid = findCorrespondingMaidEntry(path+10);
+      fbuf += sprintf(fbuf, "%ld\t%s\n", maid.model->meta->index, Config::getInstance()->userInfo[maid.model->meta->index]->USERNAME.c_str());
+      strcpy(buf, vbuf);
+      return fbuf - vbuf;
+  } else {
+      printf("Unknown dev node %s\n", path+3);
+      return -ENODATA;
+  }
   }
   MAID maid = findCorrespondingMaidEntry(path);
   int res = maid.model->makeAvailableForRead(path, offset, size);
@@ -314,8 +350,14 @@ int MegaFuse::release(const char *path, fuse_file_info *fi) {
 int MegaFuse::rename(const char *src, const char *dst) {
   MAID srcMaid = findCorrespondingMaidEntry(src);
   MAID dstMaid = findCorrespondingMaidEntry(dst);
+  bool src_is_dst = false;
 
   std::unique_lock<std::mutex> lockE(*srcMaid.engine_mutex);
+  if (dstMaid.engine_mutex == srcMaid.engine_mutex) {
+    lockE.unlock();
+    src_is_dst = true;
+  }
+  std::unique_lock<std::mutex> lockV(*dstMaid.engine_mutex);
 
   Node *n_src = srcMaid.model->nodeByPath(src);
   Node *n_dst = dstMaid.model->nodeByPath(dst);
@@ -327,11 +369,11 @@ int MegaFuse::rename(const char *src, const char *dst) {
     if (!dstFolder)
       return -EINVAL;
 
-    if (client->rename(n_src, dstFolder) != API_OK)
+    if (srcMaid.model->client->rename(n_src, dstFolder) != API_OK)
       return -EIO;
 
     n_src->attrs.map['n'] = path.second.c_str();
-    if (client->setattr(n_src))
+    if (srcMaid.model->client->setattr(n_src))
       return -EIO;
   } else {
     if (srcMaid.model->rename(src, dst) < 0)
@@ -340,7 +382,9 @@ int MegaFuse::rename(const char *src, const char *dst) {
   // delete overwritten file
   if (n_dst && n_dst->type == FILENODE) {
     EventsListener el(maidcontroller.eh, EventsHandler::UNLINK_RESULT);
-    lockE.unlock();
+    if (!src_is_dst)
+      lockE.unlock();
+    lockV.unlock();
     dstMaid.client->unlink(n_dst);
     auto l_res = el.waitEvent();
   }
@@ -349,10 +393,64 @@ int MegaFuse::rename(const char *src, const char *dst) {
 }
 int MegaFuse::write(const char *path, const void *buf, size_t size,
                     off_t offset, struct fuse_file_info *fi) {
+  if (strncmp(path, "/~%", 3) == 0) {
+    // dev node
+    static char vbuf[4096];
+    char *fbuf = vbuf;
+    if (strcmp(path + 3, "stat") == 0) {
+      return -ENOSPC;
+    } else if (strcmp(path + 3, "pr") == 0) {
+      strncpy(vbuf, (const char *)buf, size);
+      char vfprop[16];
+      long idx;
+      long value;
+      if (sscanf(vbuf, "%ld.%[a-z]=%ld\n", &idx, vfprop, &value) != 3)
+        return -EIO;
+      if (maidcontroller.models.size() <= idx)
+        return -EIO;
+
+      MetaInformation *meta = maidcontroller.models[idx]->meta;
+      if (strncmp(vfprop, "priority", min(strlen(vfprop), (size_t)8)) == 0)
+        meta->priority = value;
+      else if (strncmp(vfprop, "quota", min(strlen(vfprop), (size_t)5)) == 0 &&
+               meta->total_quota > value)
+        meta->remaining_quota = value;
+      else
+        return -EIO;
+      return size;
+    }
+  }
   return write(path, (const char *)buf, size, offset, fi);
 }
 int MegaFuse::write(const char *path, const char *buf, size_t size,
                     off_t offset, fuse_file_info *fi) {
+  if (strncmp(path, "/~%", 3) == 0) {
+    // dev node
+    static char vbuf[4096];
+    char *fbuf = vbuf;
+    if (strcmp(path + 3, "stat") == 0) {
+      return -ENOSPC;
+    } else if (strcmp(path + 3, "pr") == 0) {
+      strncpy(vbuf, (const char *)buf, size);
+      char vfprop[16];
+      long idx;
+      long value;
+      if (sscanf(vbuf, "%ld.%[a-z]=%ld\n", &idx, vfprop, &value) != 3)
+        return -EIO;
+      if (maidcontroller.models.size() <= idx)
+        return -EIO;
+
+      MetaInformation *meta = maidcontroller.models[idx]->meta;
+      if (strncmp(vfprop, "priority", min(strlen(vfprop), (size_t)8)) == 0)
+        meta->priority = value;
+      else if (strncmp(vfprop, "quota", min(strlen(vfprop), (size_t)5)) == 0 &&
+               meta->total_quota > value)
+        meta->remaining_quota = value;
+      else
+        return -EIO;
+      return size;
+    }
+  }
   MAID maid = findCorrespondingMaidEntry(path);
   std::lock_guard<std::mutex> lock2(*maid.engine_mutex);
   return maid.model->write(path, buf, size, offset, fi);
@@ -619,6 +717,8 @@ int MegaFuse::serializeSymlink() {
 }
 // serialization of xattr and symlinks
 int MegaFuse::serializeXattr() {
+  if (maidcontroller.models.size() == 0)
+    return 1;
   mode_t mode; // not used by create func
   fuse_file_info *fi = new fuse_file_info;
   const char *path = "/.megafuse_xattr.temp";
@@ -628,73 +728,73 @@ int MegaFuse::serializeXattr() {
   uint32_t buffsize = 0;
   uint32_t data_size;
   fi->flags = O_WRONLY;
-  MAID maid = findCorrespondingMaidEntry(path_final);
-
-  std::unique_lock<std::mutex> lockE(*maid.engine_mutex);
-  Node *n = maid.model->nodeByPath(std::string(path_final));
-  lockE.unlock();
-
-  if (!n) {
-    // here file could not exist on MEGA but exist on cache (/tmp/mega.xxx)
-    printf("MegaFuse::serializeXattr."
-           "Node no exist on MEGA (could exist on cache)\n");
-  } else {
-    // here, file exist on MEGA. We should unserialize this?
-    printf("MegaFuse::serializeXattr. "
-           "Node EXIST? (on MEGA), unlink.\n");
-    rename(path_final, path_old);
-  }
-
-  fi->flags = O_WRONLY;   // just to prevent error on printf on create func
-  create(path, mode, fi); // this will trunk file
-  fi->flags = O_APPEND;   // open file in append mode, no overwrite
-
-  for (Map_outside::iterator iter = xattr_list.begin();
-       iter != xattr_list.end(); ++iter) {
-    for (Map_inside::iterator iter2 = iter->second.begin();
-         iter2 != iter->second.end(); ++iter2) {
-      printf("MegaFuse::serializeXatr New xattr %s "
-             "on path %s "
-             "with value %.*s\n",
-             iter2->second->name, iter2->second->path, iter2->second->size,
-             iter2->second->value);
-
-      data_size =
-          (uint32_t)((strlen(iter2->second->path) + 1)); //+1 copy also \0
-      if ((buffsize + sizeof(uint32_t) + data_size) >= MEGAFUSE_BUFF_SIZE) {
-        write(path, binbuff, buffsize, 0, fi);
-        buffsize = 0;
-      }
-      addChunk(binbuff, &buffsize, iter2->second->path, data_size);
-
-      data_size = (uint32_t)((strlen(iter2->second->name) + 1));
-      if ((buffsize + sizeof(uint32_t) + data_size) >= MEGAFUSE_BUFF_SIZE) {
-        write(path, binbuff, buffsize, 0, fi);
-        buffsize = 0;
-      }
-      addChunk(binbuff, &buffsize, iter2->second->name, data_size);
-
-      if ((buffsize + sizeof(uint32_t) + iter2->second->size) >=
-          MEGAFUSE_BUFF_SIZE) {
-        write(path, binbuff, buffsize, 0, fi);
-        buffsize = 0;
-      }
-      addChunk(binbuff, &buffsize, iter2->second->value,
-               (uint32_t)iter2->second->size);
+  for (size_t i = 0; i < maidcontroller.models.size(); i++) {
+    MegaFuseModel *model = maidcontroller.models[i];
+    Node *n;
+    {
+      std::lock_guard<std::mutex> lockG(*maidcontroller.mutexes[i]);
+      n = model->nodeByPath(std::string(path_final));
     }
+    if (!n) {
+      // here file could not exist on MEGA but exist on cache (/tmp/mega.xxx)
+      printf("MegaFuse::serializeXattr."
+             "Node no exist on MEGA (could exist on cache)\n");
+    } else {
+      // here, file exist on MEGA. We should unserialize this?
+      printf("MegaFuse::serializeXattr. "
+             "Node EXIST? (on MEGA), unlink.\n");
+      rename(path_final, path_old);
+    }
+
+    fi->flags = O_WRONLY;   // just to prevent error on printf on create func
+    create(path, mode, fi); // this will trunk file
+    fi->flags = O_APPEND;   // open file in append mode, no overwrite
+
+    for (Map_outside::iterator iter = xattr_list.begin();
+         iter != xattr_list.end(); ++iter) {
+      for (Map_inside::iterator iter2 = iter->second.begin();
+           iter2 != iter->second.end(); ++iter2) {
+        printf("MegaFuse::serializeXatr New xattr %s "
+               "on path %s "
+               "with value %.*s\n",
+               iter2->second->name, iter2->second->path, iter2->second->size,
+               iter2->second->value);
+
+        data_size =
+            (uint32_t)((strlen(iter2->second->path) + 1)); //+1 copy also \0
+        if ((buffsize + sizeof(uint32_t) + data_size) >= MEGAFUSE_BUFF_SIZE) {
+          write(path, binbuff, buffsize, 0, fi);
+          buffsize = 0;
+        }
+        addChunk(binbuff, &buffsize, iter2->second->path, data_size);
+
+        data_size = (uint32_t)((strlen(iter2->second->name) + 1));
+        if ((buffsize + sizeof(uint32_t) + data_size) >= MEGAFUSE_BUFF_SIZE) {
+          write(path, binbuff, buffsize, 0, fi);
+          buffsize = 0;
+        }
+        addChunk(binbuff, &buffsize, iter2->second->name, data_size);
+
+        if ((buffsize + sizeof(uint32_t) + iter2->second->size) >=
+            MEGAFUSE_BUFF_SIZE) {
+          write(path, binbuff, buffsize, 0, fi);
+          buffsize = 0;
+        }
+        addChunk(binbuff, &buffsize, iter2->second->value,
+                 (uint32_t)iter2->second->size);
+      }
+    }
+
+    printf("MegaFuse::serializeXattr: Calling stringToFile.\n");
+    write(path, binbuff, buffsize, 0, fi);
+
+    releaseNoThumb(path, fi);
+    rename(path, path_final);
+    releaseNoThumb(path_final, fi); // this will upload the file
   }
-
-  printf("MegaFuse::serializeXattr: Calling stringToFile.\n");
-  write(path, binbuff, buffsize, 0, fi);
-
-  releaseNoThumb(path, fi);
-  rename(path, path_final);
-  releaseNoThumb(path_final, fi); // this will upload the file
-
-  needSerializeXattr = false;
-
-  delete fi;
   free(binbuff);
+  delete fi;
+  needSerializeXattr = false;
   return 0;
 }
 uint32_t MegaFuse::addChunk(void *binbuff, uint32_t *buffsize, char *data,

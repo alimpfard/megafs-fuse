@@ -61,9 +61,7 @@ bool MAIDController::login() {
     auto vmeta = new MetaInformation{
         Config::getInstance()->userInfo[idx]->LOADBALANCE_QUOTA,
         Config::getInstance()->userInfo[idx]->LOADBALANCE_QUOTA,
-        Config::getInstance()->userInfo[idx]->LOADBALANCE_PRIORITY,
-        idx
-    };
+        Config::getInstance()->userInfo[idx]->LOADBALANCE_PRIORITY, idx};
     meta.push_back(vmeta);
     model->meta = vmeta;
     model->engine_mutex.lock();

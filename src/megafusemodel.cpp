@@ -70,16 +70,16 @@ std::pair<std::string, std::string> MegaFuseModel::splitPath(std::string path) {
     basename = "/";
   return std::pair<std::string, std::string>(basename, filename);
 }
-// warning, no mutex
+
 Node *MegaFuseModel::nodeByPath(std::string path) {
   std::string oldpath = path;
-  if (engine_mutex.try_lock()) {
-    printf("mutex was already locked in nodebypath\n");
-    abort();
-  }
+  // if (engine_mutex.try_lock()) {
+  //   printf("mutex was already locked in nodebypath\n");
+  //   abort();
+  // }
   if (path.size() >= 3 && path[0] == '/' && path[1] == '/' && path[2] == '/') {
-      Node *n; // fill?
-      return n;
+    Node *n; // fill?
+    return n;
   }
   if (path == "/") {
     Node *n = client->nodebyhandle(client->rootnodes[0]);
@@ -93,7 +93,8 @@ Node *MegaFuseModel::nodeByPath(std::string path) {
   if (path[0] == '/')
     path = path.substr(1);
   Node *n = client->nodebyhandle(client->rootnodes[0]);
-
+  if (!n)
+    return NULL; // wtf?
   int pos;
   while ((pos = path.find_first_of('/')) > 0) {
 
@@ -111,9 +112,9 @@ Node *MegaFuseModel::nodeByPath(std::string path) {
 }
 
 Node *MegaFuseModel::childNodeByName(Node *p, std::string name) {
-  if (engine_mutex.try_lock()) {
-    abort();
-  }
+  // if (engine_mutex.try_lock()) {
+  //   abort();
+  // }
   for (node_list::iterator it = p->children.begin(); it != p->children.end();
        it++) {
     if (!strcmp(name.c_str(), (*it)->displayname())) {
@@ -150,11 +151,11 @@ int MegaFuseModel::releaseNoThumb(const char *path, struct fuse_file_info *fi) {
 int MegaFuseModel::release(const char *path, struct fuse_file_info *fi,
                            bool makethumb) {
   if (strncmp(path, "/~%", 3) == 0) {
-      // dev node
-      if (strcmp(path+3, "stat") == 0) {
-          printf("Ignoring release on dev node\n");
-          return 0;
-      }
+    // dev node
+    if (strcmp(path + 3, "stat") == 0) {
+      printf("Ignoring release on dev node\n");
+      return 0;
+    }
   }
   int ret = 0;
   auto it = cacheManager.begin();

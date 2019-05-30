@@ -2,8 +2,8 @@
 #define META_INFO_H
 
 struct MetaInformation {
-  int total_quota;
-  int remaining_quota;
+  long total_quota;
+  long remaining_quota;
   int priority;
   int index;
 };
