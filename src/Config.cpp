@@ -14,8 +14,8 @@ Config *Config::getInstance() {
   return &config;
 }
 
-void Config::check_variable(int &var, std::string value, std::string name) {
-  var = stoi(value);
+void Config::check_variable(long &var, std::string value, std::string name) {
+  var = stol(value);
   printf("variable %s has value %d\n", name.c_str(), var);
 }
 

@@ -132,11 +132,11 @@ struct UserInfo {
 public:
   std::string USERNAME;
   std::string PASSWORD;
-  int LOADBALANCE_QUOTA;
-  int LOADBALANCE_PRIORITY;
+  long LOADBALANCE_QUOTA;
+  long LOADBALANCE_PRIORITY;
   UserInfoDataState state;
-  UserInfo(std::string USERNAME, std::string PASSWORD, int LOADBALANCE_QUOTA,
-           int LOADBALANCE_PRIORITY, UserInfoDataState state)
+  UserInfo(std::string USERNAME, std::string PASSWORD, long LOADBALANCE_QUOTA,
+           long LOADBALANCE_PRIORITY, UserInfoDataState state)
       : USERNAME(USERNAME), PASSWORD(PASSWORD),
         LOADBALANCE_QUOTA(LOADBALANCE_QUOTA),
         LOADBALANCE_PRIORITY(LOADBALANCE_PRIORITY), state(state) {}
@@ -162,10 +162,10 @@ private:
 
   std::shared_ptr<UserInfo> next(UserInfoDataState);
 
-  void check_variable_multi(int &, std::string, std::string);
+  void check_variable_multi(long &, std::string, std::string);
   void check_variable_multi(std::string &, std::string, std::string);
 
-  void check_variable(int &, std::string value, std::string name);
+  void check_variable(long &, std::string value, std::string name);
   void check_variable(std::string &, std::string value, std::string name);
 };
 #endif
