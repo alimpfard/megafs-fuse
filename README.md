@@ -3,6 +3,9 @@
 A libFUSE-based userland filesystem for connecting to mega.nz which
 allows a RAID-4-like configuration of accounts, with specifyable quotas and priorities
 
+> [!NOTE]
+> #### Archived
+> The MEGA SDK no longer provides the functionality to make this work.
 
 ## build
 ```sh
